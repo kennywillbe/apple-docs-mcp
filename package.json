@@ -1,0 +1,42 @@
+{
+  "name": "apple-docs-mcp",
+  "version": "0.3.0",
+  "description": "Local MCP server for Apple Developer Documentation search and official doc content.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kennywillbe/apple-docs-mcp.git"
+  },
+  "homepage": "https://github.com/kennywillbe/apple-docs-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/kennywillbe/apple-docs-mcp/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "apple-docs-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "inspect": "npm run build && npx @modelcontextprotocol/inspector node ./dist/index.js",
+    "prepare": "npm run build",
+    "start": "node ./dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
