@@ -2,6 +2,7 @@ import type { HttpClient } from "./HttpClient.js";
 import type {
   AppleDocJson,
   AppleReference,
+  AppleSearchResult,
   AppleSymbolResolutionResult,
   AppleSymbolSearchResult,
   AppleTechnologySelectionResult,
@@ -9,6 +10,7 @@ import type {
   DocContentFormat,
   RelatedDocLink,
   ResolvedDocUrls,
+  SearchFilter,
 } from "../types/apple.js";
 import { contentNodesToText, referenceAbstractToText } from "../utils/appleContent.js";
 import {
@@ -27,6 +29,7 @@ import {
 } from "../utils/appleDocMatching.js";
 import { dataUrlForPath, normalizeDocPath, resolveAppleDocUrls } from "../utils/appleUrls.js";
 import { extractMarkdownHeadings, parseMarkdownMetadata } from "../utils/markdown.js";
+import { annotateSearchSnippet } from "../utils/searchSnippets.js";
 import { trimToMaxChars } from "../utils/text.js";
 
 export interface AppleDocsServiceOptions {
@@ -130,6 +133,73 @@ export class AppleDocsService {
     };
   }
 
+  async fallbackSearch(args: {
+    query: string;
+    filter: SearchFilter;
+    limit: number;
+    maxChildPages: number;
+    cacheTtlSeconds?: number;
+  }): Promise<{
+    fromCache: boolean;
+    results: AppleSearchResult[];
+    source: string;
+  }> {
+    if (args.filter !== "all" && args.filter !== "documentation") {
+      return {
+        fromCache: false,
+        results: [],
+        source: "documentation_index",
+      };
+    }
+
+    const technologyList = await this.listTechnologies({
+      query: args.query,
+      limit: args.limit,
+      cacheTtlSeconds: args.cacheTtlSeconds,
+    });
+    const results = new Map<string, AppleSearchResult>();
+
+    const addResult = (result: AppleSearchResult) => {
+      const key = (result.url || result.title).toLowerCase();
+      if (!key || results.has(key)) return;
+      results.set(key, result);
+    };
+
+    for (const technology of technologyList.technologies.slice(0, args.limit)) {
+      addResult(this.searchResultFromTechnology(args.query, technology));
+    }
+
+    const symbolTechnologies = this.fallbackSymbolTechnologies(technologyList.technologies);
+    let symbolSearchFromCache = true;
+    for (const technology of symbolTechnologies) {
+      try {
+        const symbolSearch = await this.searchSymbols({
+          technology: technology.path,
+          query: args.query,
+          limit: args.limit,
+          maxChildPages: args.maxChildPages,
+          cacheTtlSeconds: args.cacheTtlSeconds,
+        });
+        symbolSearchFromCache = symbolSearchFromCache && symbolSearch.fromCache;
+
+        for (const symbol of symbolSearch.results) {
+          addResult(this.searchResultFromSymbol(args.query, technology, symbol));
+          if (results.size >= args.limit) break;
+        }
+      } catch {
+        // Fallback search should still return technology-level matches when symbol search misses.
+      }
+
+      if (results.size >= args.limit) break;
+    }
+
+    return {
+      fromCache: technologyList.fromCache && symbolSearchFromCache,
+      results: [...results.values()].slice(0, args.limit),
+      source: "documentation_index",
+    };
+  }
+
   async listTechnologies(args: {
     query?: string;
     limit: number;
@@ -183,6 +253,7 @@ export class AppleDocsService {
     query: string;
     limit: number;
     kind?: string;
+    maxChildPages?: number;
     cacheTtlSeconds?: number;
   }): Promise<{
     technology: AppleTechnologyResult;
@@ -194,7 +265,12 @@ export class AppleDocsService {
     const technology = await this.requireTechnology(args.technology, args.cacheTtlSeconds);
     const frameworkPath = technology.path;
     const json = await this.getJson(frameworkPath, args.cacheTtlSeconds);
-    const references = await this.collectSearchReferences(json.data, frameworkPath, args.cacheTtlSeconds);
+    const references = await this.collectSearchReferences(
+      json.data,
+      frameworkPath,
+      args.cacheTtlSeconds,
+      args.maxChildPages ?? 40,
+    );
     const queryTokens = tokenize(args.query);
     const wildcard = wildcardPattern(args.query);
     const kindFilter = args.kind?.toLowerCase();
@@ -243,6 +319,7 @@ export class AppleDocsService {
   async resolveSymbol(args: {
     technology?: string;
     symbolOrPath: string;
+    maxChildPages?: number;
     cacheTtlSeconds?: number;
   }): Promise<AppleSymbolResolutionResult> {
     const technology = await this.requireTechnology(args.technology, args.cacheTtlSeconds);
@@ -252,7 +329,7 @@ export class AppleDocsService {
     const directPath = directDocumentationPath(requested);
     const references = directPath
       ? []
-      : await this.referencesForTechnology(technology, args.cacheTtlSeconds);
+      : await this.referencesForTechnology(technology, args.cacheTtlSeconds, args.maxChildPages);
     const referenceMatch = directPath
       ? undefined
       : bestExactReference(references, requested, technology.path);
@@ -308,11 +385,13 @@ export class AppleDocsService {
     format: DocContentFormat;
     maxChars: number;
     includeMetadata: boolean;
+    maxChildPages?: number;
     cacheTtlSeconds?: number;
   }): Promise<GetContentResult & { resolution: AppleSymbolResolutionResult }> {
     const resolution = await this.resolveSymbol({
       technology: args.technology,
       symbolOrPath: args.symbolOrPath,
+      maxChildPages: args.maxChildPages,
       cacheTtlSeconds: args.cacheTtlSeconds,
     });
     const content = await this.getContent({
@@ -468,9 +547,10 @@ export class AppleDocsService {
   private async referencesForTechnology(
     technology: AppleTechnologyResult,
     cacheTtlSeconds?: number,
+    maxChildPages = 40,
   ): Promise<AppleReference[]> {
     const json = await this.getJson(technology.path, cacheTtlSeconds);
-    return this.collectSearchReferences(json.data, technology.path, cacheTtlSeconds);
+    return this.collectSearchReferences(json.data, technology.path, cacheTtlSeconds, maxChildPages);
   }
 
   private relatedSectionGroups(data: AppleDocJson, filter: RelatedSectionFilter) {
@@ -488,6 +568,7 @@ export class AppleDocsService {
     data: AppleDocJson,
     frameworkPath: string,
     cacheTtlSeconds?: number,
+    maxChildPages = 40,
   ) {
     const references = new Map<string, AppleReference>();
     const addReferences = (items: AppleDocJson["references"] | undefined) => {
@@ -515,7 +596,7 @@ export class AppleDocsService {
     addPageReference(data, frameworkPath);
     addReferences(data.references);
 
-    const childUrls = this.childCollectionUrls(data, frameworkPath).slice(0, 40);
+    const childUrls = this.childCollectionUrls(data, frameworkPath).slice(0, maxChildPages);
     const childPages = await Promise.all(
       childUrls.map(async (url) => {
         try {
@@ -555,5 +636,71 @@ export class AppleDocsService {
     }
 
     return [...urls];
+  }
+
+  private fallbackSymbolTechnologies(technologies: AppleTechnologyResult[]): AppleTechnologyResult[] {
+    const candidates = [
+      this.activeTechnology,
+      ...technologies,
+    ].filter((technology): technology is AppleTechnologyResult => Boolean(technology));
+
+    const seen = new Set<string>();
+    return candidates.filter((technology) => {
+      const key = technology.path.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  private searchResultFromTechnology(
+    query: string,
+    technology: AppleTechnologyResult,
+  ): AppleSearchResult {
+    const annotation = annotateSearchSnippet(query, [
+      { name: "title", value: technology.title },
+      { name: "abstract", value: technology.abstract },
+      { name: "path", value: technology.path },
+    ]);
+
+    return {
+      type: "documentation",
+      title: technology.title,
+      description: technology.abstract,
+      url: technology.url,
+      hierarchy: "Apple Developer Documentation > Technologies",
+      kind: technology.kind,
+      matchedFields: annotation.matchedFields,
+      snippet: annotation.snippet,
+      source: "documentation_index",
+      fallback: true,
+    };
+  }
+
+  private searchResultFromSymbol(
+    query: string,
+    technology: AppleTechnologyResult,
+    symbol: AppleSymbolSearchResult,
+  ): AppleSearchResult {
+    const annotation = annotateSearchSnippet(query, [
+      { name: "title", value: symbol.title },
+      { name: "abstract", value: symbol.abstract },
+      { name: "path", value: symbol.path },
+      { name: "technology", value: technology.title },
+    ]);
+
+    return {
+      type: "documentation",
+      title: symbol.title,
+      description: symbol.abstract,
+      url: symbol.url,
+      hierarchy: `Apple Developer Documentation > ${technology.title}`,
+      kind: symbol.kind,
+      matchedFields: annotation.matchedFields,
+      snippet: annotation.snippet,
+      source: "documentation_index",
+      score: symbol.score,
+      fallback: true,
+    };
   }
 }

@@ -14,6 +14,11 @@ export interface AppleSearchResult {
   availabilityDate?: string;
   durationSeconds?: number | null;
   pageCount?: number | null;
+  matchedFields?: string[];
+  snippet?: string;
+  source?: string;
+  score?: number;
+  fallback?: boolean;
 }
 
 export interface AppleReference {

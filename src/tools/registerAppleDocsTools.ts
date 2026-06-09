@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { AppleDocsService } from "../services/AppleDocsService.js";
 import type { AppleSearchService } from "../services/AppleSearchService.js";
 import type { FileCache } from "../services/FileCache.js";
+import { appConfig } from "../config.js";
 import {
   formatCacheStatus,
   formatCurrentTechnology,
@@ -47,13 +48,55 @@ export function registerAppleDocsTools(server: McpServer, services: RegisterTool
       limit = 8,
       cache_ttl_seconds,
     }) => {
-      const result = await services.searchService.search({
-        query,
-        filter,
-        locale,
-        limit,
-        cacheTtlSeconds: cache_ttl_seconds,
-      });
+      let result;
+      try {
+        result = await services.searchService.search({
+          query,
+          filter,
+          locale,
+          limit,
+          cacheTtlSeconds: cache_ttl_seconds,
+        });
+
+        if (result.results.length === 0 && (filter === "all" || filter === "documentation")) {
+          const fallback = await services.docsService.fallbackSearch({
+            query,
+            filter,
+            limit,
+            maxChildPages: appConfig.symbolSearchDefaultChildPages,
+            cacheTtlSeconds: cache_ttl_seconds,
+          });
+
+          if (fallback.results.length > 0) {
+            result = {
+              query,
+              filter,
+              locale,
+              fromCache: result.fromCache && fallback.fromCache,
+              fallbackReason: "Apple search returned no results.",
+              fallbackSource: fallback.source,
+              results: fallback.results,
+            };
+          }
+        }
+      } catch (error) {
+        const fallback = await services.docsService.fallbackSearch({
+          query,
+          filter,
+          limit,
+          maxChildPages: appConfig.symbolSearchDefaultChildPages,
+          cacheTtlSeconds: cache_ttl_seconds,
+        });
+        result = {
+          query,
+          filter,
+          locale,
+          fromCache: fallback.fromCache,
+          fallbackReason: error instanceof Error ? error.message : String(error),
+          fallbackSource: fallback.source,
+          results: fallback.results,
+        };
+      }
 
       return mcpText(formatSearchResults(result));
     },
@@ -114,15 +157,18 @@ export function registerAppleDocsTools(server: McpServer, services: RegisterTool
         .describe("Optional technology/framework name or path. If omitted, the selected technology is used."),
       query: z.string().min(1).describe("Symbol or keyword query, for example 'AppIntent' or 'parameterSummary'."),
       kind: z.string().optional().describe("Optional reference kind filter, for example 'symbol' or 'article'."),
+      deep: z.boolean().optional().describe("Search more child documentation pages inside the technology."),
+      max_child_pages: z.number().int().min(0).max(500).optional(),
       limit: z.number().int().min(1).max(100).optional(),
       cache_ttl_seconds: z.number().int().min(0).optional(),
     },
-    async ({ technology, query, kind, limit = 20, cache_ttl_seconds }) => {
+    async ({ technology, query, kind, deep = false, max_child_pages, limit = 20, cache_ttl_seconds }) => {
       const result = await services.docsService.searchSymbols({
         technology,
         query,
         kind,
         limit,
+        maxChildPages: childPageLimit(deep, max_child_pages),
         cacheTtlSeconds: cache_ttl_seconds,
       });
       return mcpText(formatSymbolSearch(result));
@@ -145,6 +191,8 @@ export function registerAppleDocsTools(server: McpServer, services: RegisterTool
       format: z.enum(["markdown", "json"]).optional(),
       max_chars: z.number().int().min(1000).max(100000).optional(),
       include_metadata: z.boolean().optional(),
+      deep: z.boolean().optional().describe("Search more child documentation pages while resolving the symbol."),
+      max_child_pages: z.number().int().min(0).max(500).optional(),
       cache_ttl_seconds: z.number().int().min(0).optional(),
     },
     async ({
@@ -153,6 +201,8 @@ export function registerAppleDocsTools(server: McpServer, services: RegisterTool
       format = "markdown",
       max_chars = 30000,
       include_metadata = true,
+      deep = false,
+      max_child_pages,
       cache_ttl_seconds,
     }) => {
       const result = await services.docsService.getSymbolContent({
@@ -161,6 +211,7 @@ export function registerAppleDocsTools(server: McpServer, services: RegisterTool
         format,
         maxChars: max_chars,
         includeMetadata: include_metadata,
+        maxChildPages: childPageLimit(deep, max_child_pages),
         cacheTtlSeconds: cache_ttl_seconds,
       });
       return mcpText(formatSymbolContent(result));
@@ -276,4 +327,9 @@ export function registerAppleDocsTools(server: McpServer, services: RegisterTool
       return mcpText(`Cleared ${count} cache files.`);
     },
   );
+}
+
+function childPageLimit(deep: boolean, explicitLimit?: number): number {
+  if (explicitLimit !== undefined) return explicitLimit;
+  return deep ? appConfig.symbolSearchDeepChildPages : appConfig.symbolSearchDefaultChildPages;
 }

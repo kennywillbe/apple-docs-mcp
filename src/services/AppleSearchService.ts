@@ -1,6 +1,7 @@
 import type { HttpClient } from "./HttpClient.js";
 import type { AppleSearchResult, SearchFilter } from "../types/apple.js";
 import { normalizeLocale } from "../utils/locale.js";
+import { annotateSearchSnippet } from "../utils/searchSnippets.js";
 
 const filters: Record<SearchFilter, object | null> = {
   all: null,
@@ -53,6 +54,7 @@ export class AppleSearchService {
     const results = (data.results ?? [])
       .map(extractSearchResult)
       .filter((result): result is AppleSearchResult => Boolean(result))
+      .map((result) => annotateSearchResult(args.query, result))
       .slice(0, args.limit);
 
     return {
@@ -63,6 +65,24 @@ export class AppleSearchService {
       results,
     };
   }
+}
+
+function annotateSearchResult(query: string, result: AppleSearchResult): AppleSearchResult {
+  const annotation = annotateSearchSnippet(query, [
+    { name: "title", value: result.title },
+    { name: "description", value: result.description },
+    { name: "hierarchy", value: result.hierarchy },
+    { name: "kind", value: result.kind },
+    { name: "type", value: result.type },
+    { name: "project", value: result.project },
+  ]);
+
+  return {
+    ...result,
+    matchedFields: annotation.matchedFields,
+    snippet: annotation.snippet,
+    source: "apple_search",
+  };
 }
 
 function extractSearchResult(item: unknown): AppleSearchResult | null {

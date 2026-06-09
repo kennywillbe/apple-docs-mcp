@@ -158,11 +158,19 @@ npm run inspect
 - `APPLE_DOCS_MCP_CACHE_DIR`: Override cache directory.
 - `APPLE_DOCS_MCP_CACHE_TTL_SECONDS`: Override cache TTL. Default: `86400`.
 - `APPLE_DOCS_MCP_USER_AGENT`: Override User-Agent header.
+- `APPLE_DOCS_MCP_SYMBOL_SEARCH_CHILD_PAGES`: Child collection pages to inspect for normal symbol search. Default: `40`.
+- `APPLE_DOCS_MCP_SYMBOL_SEARCH_DEEP_CHILD_PAGES`: Child collection pages to inspect when `deep` is enabled. Default: `120`.
 
 ## Notes
 
 This server fetches pages on demand. Do not bulk crawl Apple documentation.
 
 The search tool depends on the Apple Developer search endpoint used by Apple's
-own search page. Direct Markdown/JSON documentation fetches are separate from
-that search endpoint.
+own search page. If that endpoint is unavailable, `search_apple_docs` falls
+back to official documentation indexes for documentation queries. Direct
+Markdown/JSON documentation fetches are separate from that search endpoint.
+
+`search_apple_symbols` and `get_apple_symbol_documentation` support `deep` and
+`max_child_pages` for cases where a framework spreads symbols across many child
+documentation pages. Keep the default search for normal use, and enable deep
+search only when a known symbol is missing.

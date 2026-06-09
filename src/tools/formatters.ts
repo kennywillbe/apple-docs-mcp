@@ -27,6 +27,8 @@ export function formatSearchResults(args: {
   filter: string;
   locale: string;
   fromCache: boolean;
+  fallbackReason?: string;
+  fallbackSource?: string;
   results: AppleSearchResult[];
 }): string {
   const lines = [
@@ -36,6 +38,12 @@ export function formatSearchResults(args: {
     `Locale: ${args.locale}`,
     `From cache: ${args.fromCache ? "yes" : "no"}`,
   ];
+
+  if (args.fallbackReason) {
+    lines.push(`Fallback: yes`);
+    lines.push(`Fallback source: ${args.fallbackSource ?? "unknown"}`);
+    lines.push(`Fallback reason: ${args.fallbackReason}`);
+  }
 
   if (args.queryVariants && args.queryVariants.length > 1) {
     lines.push(`Query variants: ${args.queryVariants.join(" | ")}`);
@@ -58,6 +66,9 @@ export function formatSearchResults(args: {
     if (result.availabilityDate) lines.push(`   Date: ${result.availabilityDate}`);
     if (result.durationSeconds) lines.push(`   Duration seconds: ${result.durationSeconds}`);
     if (result.pageCount) lines.push(`   Page count: ${result.pageCount}`);
+    if (result.source) lines.push(`   Source: ${result.source}${result.fallback ? " (fallback)" : ""}`);
+    if (result.matchedFields?.length) lines.push(`   Matched: ${result.matchedFields.join(", ")}`);
+    if (result.snippet) lines.push(`   Snippet: ${result.snippet}`);
     if (result.description) lines.push(`   Description: ${result.description}`);
     if (result.url) lines.push(`   URL: ${result.url}`);
     lines.push("");
